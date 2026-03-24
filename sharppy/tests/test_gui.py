@@ -18,22 +18,23 @@ prof_coll = dec.getProfiles()
 prof = prof_coll.getCurrentProfs()['']
 
 if QtWidgets.QApplication.instance() is None:
-    app = QtWidgets.QApplication([])
+    app = QtWidgets.QApplication([])    
 else:
     app = QtWidgets.QApplication.instance()
 
-@pytest.mark.skipif(True, reason="DISPLAY not set")
-# @pytest.mark.skipif("DISPLAY_AVAIL" in os.environ and os.environ["DISPLAY_AVAIL"] == 'NO', reason="DISPLAY not set")
+#@pytest.mark.skipif(True, reason="DISPLAY not set")
+#@pytest.mark.skipif(True)
+@pytest.mark.skipif("DISPLAY_AVAIL" in os.environ and os.environ["DISPLAY_AVAIL"] == 'NO', reason="DISPLAY not set")
 def test_insets():
     insets = [viz.fire.plotFire,
               viz.winter.plotWinter,
               viz.kinematics.plotKinematics,
+              viz.plotAdvDiagnostics,
               viz.stp.plotSTP,
               viz.ship.plotSHIP,
               viz.vrot.plotVROT,
-              viz.analogues.plotAnalogues,
               viz.stpef.plotSTPEF]
-    names = ['fire', 'winter', 'kinematics', 'stp', 'ship', 'vrot', 'sars', 'stpef']
+    names = ['fire', 'winter', 'kinematics', 'advdiag', 'stp', 'ship', 'vrot', 'stpef']
     for inset, name in zip(insets, names):
         print("Testing:", str(inset))
         if inset is viz.thermo.plotText:
@@ -49,8 +50,7 @@ def test_insets():
     ens.addProfileCollection(prof_coll)
     ens.setActiveCollection(0)
 
-# @pytest.mark.skipif("DISPLAY_AVAIL" in os.environ and os.environ["DISPLAY_AVAIL"] == 'NO', reason="DISPLAY not set")
-@pytest.mark.skipif(True, reason="DISPLAY not set")
+@pytest.mark.skipif("DISPLAY_AVAIL" in os.environ and os.environ["DISPLAY_AVAIL"] == 'NO', reason="DISPLAY not set")
 def test_hodo():
     hodo = viz.hodo.plotHodo
 
@@ -62,8 +62,7 @@ def test_hodo():
     #s.setDeviant('left')
     s.plotBitMap.save('hodo.png', format='png')
 
-# @pytest.mark.skipif("DISPLAY_AVAIL" in os.environ and os.environ["DISPLAY_AVAIL"] == 'NO', reason="DISPLAY not set")
-@pytest.mark.skipif(True, reason="DISPLAY not set")
+@pytest.mark.skipif("DISPLAY_AVAIL" in os.environ and os.environ["DISPLAY_AVAIL"] == 'NO', reason="DISPLAY not set")
 def test_skew():
     skew = viz.skew.plotSkewT
     #s = skew()
@@ -71,8 +70,7 @@ def test_skew():
     #s.setActiveCollection(0)
     #s.plotBitMap.save('skew.png', format='png')
 
-# @pytest.mark.skipif("DISPLAY_AVAIL" in os.environ and os.environ["DISPLAY_AVAIL"] == 'NO', reason="DISPLAY not set")
-@pytest.mark.skipif(True, reason="DISPLAY not set")
+@pytest.mark.skipif("DISPLAY_AVAIL" in os.environ and os.environ["DISPLAY_AVAIL"] == 'NO', reason="DISPLAY not set")
 def test_smaller_insets():
     insets = [viz.speed.plotSpeed,
               viz.advection.plotAdvection,
@@ -95,8 +93,7 @@ def test_smaller_insets():
     test = viz.generic.plotGeneric(np.asarray([1,2]),np.asarray([1,2]))
     del test
 
-# @pytest.mark.skipif("DISPLAY_AVAIL" in os.environ and os.environ["DISPLAY_AVAIL"] == 'NO', reason="DISPLAY not set")
-@pytest.mark.skipif(True, reason="DISPLAY not set")
+@pytest.mark.skipif("DISPLAY_AVAIL" in os.environ and os.environ["DISPLAY_AVAIL"] == 'NO', reason="DISPLAY not set")
 def test_mapper():
     mapper = viz.map.Mapper(-97,35)
     assert mapper.getLambda0() == -97
@@ -108,4 +105,4 @@ def test_mapper():
         mapper.getCoordPaths()
 
 app.quit()
-del app
+del app 

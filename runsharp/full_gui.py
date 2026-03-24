@@ -19,13 +19,14 @@ from sutils.async_threads import AsyncThreads
 from sutils.ver_updates import check_latest
 from datasources import data_source
 from sharppy.io.arw_decoder import ARWDecoder
+from sharppy.io.point_forecast import build_profile_collection
 from sharppy.io.decoder import getDecoders
 import sharppy.sharptab.profile as profile
 from sharppy.viz.preferences import PrefDialog
 from sharppy.viz.SPCWindow import SPCWindow
 from sharppy._version import get_versions
 import sys
-import glob as glob
+import os
 import numpy as np
 import warnings
 import sutils.frozenutils as frozenutils
@@ -34,14 +35,13 @@ import qtpy
 import platform
 
 HOME_DIR = os.path.join(os.path.expanduser("~"), ".sharppy")
-NUCAPS_times_file = os.path.join(HOME_DIR, "datasources", "nucapsTimes.txt") # JTS
 LOG_FILE = os.path.join(HOME_DIR, 'sharppy.log')
 if not os.path.isdir(HOME_DIR):
     os.mkdir(HOME_DIR)
 
 if os.path.exists(LOG_FILE):
     log_file_size = os.path.getsize(LOG_FILE)
-    MAX_FILE_SIZE = 1024 * 1024
+    MAX_FILE_SIZE = 1024 * 1024 
     if log_file_size > MAX_FILE_SIZE:
         # Delete the log file as it's grown too large
         os.remove(LOG_FILE)
@@ -122,7 +122,7 @@ def versioning_info(include_sharppy=False):
     txt += "Numpy version: " + str(np.__version__) + '\n'
     txt += "Python version: " + str(platform.python_version()) + '\n'
     txt += "PySide/Qt version: " + str(qtpy.QtCore.__version__)
-    return txt
+    return txt 
 
 class crasher(object):
     def __init__(self, **kwargs):
@@ -192,7 +192,7 @@ class Calendar(QCalendarWidget):
             color = QColor('#808080')
             color.setAlphaF(0.5)
             painter.fillRect(rect, color)
-
+ 
     def setLatestAvailable(self, dt_avail):
         qdate_avail = QDate(dt_avail.year, dt_avail.month, dt_avail.day)
         #self.setMaximumDate(qdate_avail)
@@ -219,6 +219,7 @@ class Picker(QWidget):
         Construct the main picker widget: a means for interactively selecting
         which sounding profile(s) to view.
         """
+
         super(Picker, self).__init__(**kwargs)
         self.data_sources = data_source.loadDataSources()
         self.config = config
@@ -231,19 +232,34 @@ class Picker(QWidget):
         self.prof_idx = []
         # set the default profile type to Observed
         self.model = "Observed"
-        # this is the default model initialization time
-        self.all_times = sorted(self.data_sources[self.model].getAvailableTimes())
-        self.run = [t for t in self.all_times if t.hour in [0, 12]][-1]
-
-        urls = data_source.pingURLs(self.data_sources)
-        self.has_connection = any(urls.values())
+        # Avoid blocking the first paint on network lookups.
+        self.all_times = self._fallback_times()
+        self.run = self.all_times[-1]
+        self.has_connection = False
         self.strictQC = True
-
-        # JTS - list all overpass times for the selected day
-        self.nucaps_daily_times = []
 
         # initialize the UI
         self.__initUI()
+        QTimer.singleShot(0, self._finish_startup)
+
+    def _fallback_times(self):
+        now = date.datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+        synoptic_hours = [0, 12]
+        current_hour = max([hour for hour in synoptic_hours if hour <= now.hour] or [12])
+        current = now.replace(hour=current_hour)
+        if current > now:
+            current -= date.timedelta(days=1)
+        return [current - date.timedelta(hours=12 * idx) for idx in range(15)][::-1]
+
+    def _finish_startup(self):
+        try:
+            urls = data_source.pingURLs(self.data_sources)
+            self.has_connection = any(urls.values())
+            self.view.hasInternet(self.has_connection)
+            self.update_run_dropdown()
+            self.update_list()
+        except Exception as e:
+            logging.exception(e)
 
     def __initUI(self):
         """
@@ -311,13 +327,11 @@ class Picker(QWidget):
         # Set up the run dropdown box and select the correct index
         self.run_dropdown = self.dropdown_menu(
             [t.strftime(Picker.run_format) for t in filt_times])
-
         try:
             self.run_dropdown.setCurrentIndex(filt_times.index(self.run))
         except ValueError as e:
             logging.error("Run dropdown is missing its times ... ?")
             logging.exception(e)
-
         # connect the click actions to functions that do stuff
         self.model_dropdown.activated.connect(self.get_model)
         self.map_dropdown.activated.connect(self.get_map)
@@ -428,14 +442,17 @@ class Picker(QWidget):
             self.date_label.setDisabled(True)
         else:
             fcst_hours = self.data_sources[self.model].getForecastHours()
-            if fcst_hours != [0]:
+            if fcst_hours != [0] or self.data_sources[self.model].isPointForecast():
                 self.profile_list.setEnabled(True)
-                self.all_profs.setEnabled(True)
                 self.date_label.setEnabled(True)
                 for fh in fcst_hours:
                     fcst_str = (self.run + date.timedelta(hours=fh)
                                 ).strftime(Picker.date_format) + "   (F%03d)" % fh
                     timelist.append(fcst_str)
+                if len(fcst_hours) > 1:
+                    self.all_profs.setEnabled(True)
+                else:
+                    self.all_profs.setDisabled(True)
             else:
                 self.profile_list.setDisabled(True)
                 self.all_profs.setDisabled(True)
@@ -480,29 +497,40 @@ class Picker(QWidget):
             url = self.data_sources[self.model].getURLList(
                 outlet="Local")[0].replace("file://", "")
 
-            def getTimes():
+            def getTimes(): 
                 return self.data_sources[self.model].getAvailableTimes(url)
+        elif self.data_sources[self.model].isPointForecast():
+            def getTimes():
+                return self.data_sources[self.model].getPointForecastTimes(self.cal_date)
         else:
             def getTimes():
                 return self.data_sources[self.model].getAvailableTimes(dt=self.cal_date)
 
         self.cal_date = self.cal.selectedDate()
-
         # Function to update the times.
         def update(times):
             self.run_dropdown.clear()  # Clear all of the items from the dropdown
             times = times[0]
-            time_span = self.data_sources[self.model].updateTimeSpan()
-            for outlet in time_span:
-                if np.asarray(outlet).all() == None:
-                    span = True
-                else:
-                    dt_earliest = outlet[0]
-                    dt_avail = outlet[1]
-                    span = False
-            if span is True and len(times) > 0:
-                dt_avail = max(times)
-                dt_earliest = min(times)
+            if isinstance(times, Exception):
+                logging.exception(times)
+                times = []
+            if self.data_sources[self.model].isPointForecast():
+                dt_earliest, dt_avail = self.data_sources[self.model].getPointForecastTimeSpan()
+            else:
+                time_span = self.data_sources[self.model].updateTimeSpan()
+                span = True
+                dt_earliest = self.run
+                dt_avail = self.run
+                for outlet in time_span:
+                    if np.asarray(outlet).all() == None:
+                        span = True
+                    else:
+                        dt_earliest = outlet[0]
+                        dt_avail = outlet[1]
+                        span = False
+                if span is True and len(times) > 0:
+                    dt_avail = max(times)
+                    dt_earliest = min(times)
             self.cal.setLatestAvailable(dt_avail)
             self.cal.setEarliestAvailable(dt_earliest)
             self.cal_date = self.cal.selectedDate()
@@ -512,7 +540,8 @@ class Picker(QWidget):
             filtered_times = []
             for i, data_time in enumerate(times):
                 if data_time.day == self.cal_date.day() and data_time.year == self.cal_date.year() and data_time.month == self.cal_date.month():
-                    self.run_dropdown.addItem(data_time.strftime(Picker.run_format))
+                    self.run_dropdown.addItem(
+                        data_time.strftime(Picker.run_format))
                     filtered_times.append(i)
 
             if len(filtered_times) > 0:
@@ -536,87 +565,19 @@ class Picker(QWidget):
             else:
                 self.run = date.datetime(1700, 1, 1, 0, 0, 0)
             self.run_dropdown.update()
-
             if len(filtered_times) > 0:
-                # JTS -  Handle how real-time and off-line NUCAPS data is displayed.
-                if self.model == "NUCAPS Case Study NOAA-20" \
-                    or self.model == "NUCAPS Case Study Suomi-NPP" \
-                    or self.model == "NUCAPS Case Study Aqua" \
-                    or self.model == "NUCAPS Case Study MetOp-A" \
-                    or self.model == "NUCAPS Case Study MetOp-B" \
-                    or self.model == "NUCAPS Case Study MetOp-C":
-                    self.run_dropdown.clear()
-                    self.run_dropdown.addItem(self.tr("- Viewing archived data - "))
-                    self.run_dropdown.setCurrentIndex(0)
-                    self.run_dropdown.update()
-                    self.run_dropdown.setEnabled(False)
-                elif self.model == "NUCAPS CONUS NOAA-20" \
-                    or self.model == "NUCAPS CONUS Suomi-NPP" \
-                    or self.model == "NUCAPS CONUS Aqua" \
-                    or self.model == "NUCAPS CONUS MetOp-A" \
-                    or self.model == "NUCAPS CONUS MetOp-B" \
-                    or self.model == "NUCAPS CONUS MetOp-C" \
-                    or self.model == "NUCAPS Caribbean NOAA-20" \
-                    or self.model == "NUCAPS Caribbean Suomi-NPP" \
-                    or self.model == "NUCAPS Caribbean Aqua" \
-                    or self.model == "NUCAPS Caribbean MetOp-A" \
-                    or self.model == "NUCAPS Caribbean MetOp-B" \
-                    or self.model == "NUCAPS Caribbean MetOp-C" \
-                    or self.model == "NUCAPS Alaska NOAA-20" \
-                    or self.model == "NUCAPS Alaska Suomi-NPP" \
-                    or self.model == "NUCAPS Alaska Aqua" \
-                    or self.model == "NUCAPS Alaska MetOp-A" \
-                    or self.model == "NUCAPS Alaska MetOp-B" \
-                    or self.model == "NUCAPS Alaska MetOp-C":
-
-                    # Load the empty csv for days that have no data and refresh the map.
-                    self.data_sources = data_source.loadDataSources()
-                    self.run_dropdown.setCurrentIndex(times.index(self.run))
-                    self.run_dropdown.update()
-                    self.run_dropdown.setEnabled(True)
-
-                    # Re-acquire the list of available times for the newly-selected data source.
-                    self.nucaps_daily_times = times
-                else:
-                    self.run_dropdown.setCurrentIndex(times.index(self.run))
-                    self.run_dropdown.update()
-                    self.run_dropdown.setEnabled(True)
+                self.run_dropdown.setEnabled(True)
+                self.run_dropdown.setCurrentIndex(times.index(self.run))
             elif len(filtered_times) == 0:
-                if self.model == "Observed" \
-                    or self.model == "NUCAPS Case Study NOAA-20" \
-                    or self.model == "NUCAPS Case Study Suomi-NPP" \
-                    or self.model == "NUCAPS Case Study Aqua" \
-                    or self.model == "NUCAPS Case Study MetOp-A" \
-                    or self.model == "NUCAPS Case Study MetOp-B" \
-                    or self.model == "NUCAPS Case Study MetOp-C":
+                if self.model == "Observed":
                     string = "obs"
-                elif self.model == "NUCAPS CONUS NOAA-20" \
-                    or self.model == "NUCAPS CONUS Suomi-NPP" \
-                    or self.model == "NUCAPS CONUS Aqua" \
-                    or self.model == "NUCAPS CONUS MetOp-A" \
-                    or self.model == "NUCAPS CONUS MetOp-B" \
-                    or self.model == "NUCAPS CONUS MetOp-C" \
-                    or self.model == "NUCAPS Caribbean NOAA-20" \
-                    or self.model == "NUCAPS Caribbean Suomi-NPP" \
-                    or self.model == "NUCAPS Caribbean Aqua" \
-                    or self.model == "NUCAPS Caribbean MetOp-A" \
-                    or self.model == "NUCAPS Caribbean MetOp-B" \
-                    or self.model == "NUCAPS Caribbean MetOp-C" \
-                    or self.model == "NUCAPS Alaska NOAA-20" \
-                    or self.model == "NUCAPS Alaska Suomi-NPP" \
-                    or self.model == "NUCAPS Alaska Aqua" \
-                    or self.model == "NUCAPS Alaska MetOp-A" \
-                    or self.model == "NUCAPS Alaska MetOp-B" \
-                    or self.model == "NUCAPS Alaska MetOp-C":
-                    # Load the empty csv for days that have no data and refresh the map.
-                    string = "obs"
-                    self.data_sources = data_source.loadDataSources()
                 else:
                     string = "runs"
                 self.run_dropdown.addItem(self.tr("- No " + string + " available - "))
                 self.run_dropdown.setCurrentIndex(0)
                 self.run_dropdown.update()
                 self.run_dropdown.setEnabled(False)
+
 
         # Post the getTimes to update.  This will re-write the list of times in the dropdown box that
         # match the date selected in the calendar.
@@ -628,7 +589,6 @@ class Picker(QWidget):
         Change the text of the button based on the user click.
         """
         logging.debug("Calling full_gui.map_link")
-
         if point is None:
             self.loc = None
             self.disp_name = None
@@ -640,6 +600,13 @@ class Picker(QWidget):
             self.button.setText(self.disp_name + ' | Generate Profiles')
             self.button.setEnabled(True)
             self.areal_lon, self.areal_y = point
+        elif self.data_sources[self.model].isPointForecast():
+            self.loc = point
+            self.disp_name = "%.3f, %.3f" % (point['lat'], point['lon'])
+            self.button.setText(self.disp_name + ' | Generate Profiles')
+            if self.has_connection:
+                self.button.setEnabled(True)
+
         else:
             self.loc = point  # url.toString().split('/')[-1]
             if point['icao'] != "":
@@ -684,7 +651,8 @@ class Picker(QWidget):
                         logging.exception(e1)
                         if self.skew is not None:
                             self.skew.closeIfEmpty()
-                        raise IOError("No outlet found with the requested profile!")
+                        raise IOError(
+                            "No outlet found with the requested profile!")
                     except Exception as e:
                         if debug:
                             print(traceback.format_exc())
@@ -698,87 +666,19 @@ class Picker(QWidget):
         Get the user's model selection
         """
         logging.debug("Calling full_gui.get_model")
-
         self.model = self.model_dropdown.currentText()
 
         self.update_from_cal(None, updated_model=True)
-        self.run_label.setEnabled(True)
-        self.cal.setEnabled(True)
 
     def get_run(self, index):
         """
         Get the user's run hour selection for the model
         """
         logging.debug("Calling full_gui.get_run")
-
-        # JTS - The region and satID strings will be used to construct the dynamic path to the csv files in data_source.py.
-        if self.model == "NUCAPS CONUS NOAA-20":
-            region = 'conus'
-            satID = 'j01'
-        elif self.model == "NUCAPS CONUS Aqua":
-            region = 'conus'
-            satID = 'aq0'
-        elif self.model == "NUCAPS CONUS MetOp-A":
-            region = 'conus'
-            satID = 'm02'
-        elif self.model == "NUCAPS CONUS MetOp-B":
-            region = 'conus'
-            satID = 'm01'
-        elif self.model == "NUCAPS CONUS MetOp-C":
-            region = 'conus'
-            satID = 'm03'
-        elif self.model == "NUCAPS Caribbean NOAA-20":
-            region = 'caribbean'
-            satID = 'j01'
-        elif self.model == "NUCAPS Alaska NOAA-20":
-            region = 'alaska'
-            satID = 'j01'
-
-        # Write the data source, region, satellite ID, year, month, day and time info to a temporary text file.
-        if self.model.startswith("NUCAPS"):
-            nucaps_year = self.cal_date.year()
-            nucaps_month = None
-            nucaps_day = None
-
-            if self.cal_date.month() < 10:
-                nucaps_month = f'0{self.cal_date.month()}'
-            else:
-                nucaps_month = self.cal_date.month()
-            if self.cal_date.day() < 10:
-                nucaps_day = f'0{self.cal_date.day()}'
-            else:
-                nucaps_day = self.cal_date.day()
-
-            nucaps_time = self.run_dropdown.currentText()[-8:-4]
-            selected_ds = self.model
-            overpass_string = self.run_dropdown.currentText()
-
-            nucapsTimesList = []
-            nucapsTimesList.append(f'{selected_ds},{region},{satID},{nucaps_year},{nucaps_month},{nucaps_day},{nucaps_time}')
-            file = open(NUCAPS_times_file, "w")
-            for line in nucapsTimesList:
-                file.write(f'{line}')
-            file.close()
-
-            # Hack to get the screen to refresh and display the points.
-            # Auto-update the map
-            self.update_from_cal(None, updated_model=False)
-
-            # Convert overpass_string to a datetime object.
-            self.run = date.datetime.strptime(overpass_string, Picker.run_format)
-
-            # Change the run_dropdown back to the user-selected overpass.
-            self.run_dropdown.setCurrentIndex(self.nucaps_daily_times.index(self.run))
-
-            self.view.setCurrentTime(self.run)
-
-            # Cleanup - remove temporary file once data source has been reloaded.
-            if os.path.isfile(NUCAPS_times_file):
-                os.remove(NUCAPS_times_file)
-        else:
-            self.run = date.datetime.strptime(self.run_dropdown.currentText(), Picker.run_format)
-            self.view.setCurrentTime(self.run)
-            self.update_list()
+        self.run = date.datetime.strptime(
+            self.run_dropdown.currentText(), Picker.run_format)
+        self.view.setCurrentTime(self.run)
+        self.update_list()
 
     def get_map(self):
         """
@@ -820,6 +720,7 @@ class Picker(QWidget):
         and magical funtimes.
         :return:
         """
+
         logging.debug("Calling full_gui.skewApp")
 
         failure = False
@@ -949,6 +850,7 @@ class Picker(QWidget):
         logging.debug('Get the profiles from the decoded file.')
         profs = dec.getProfiles()
         stn_id = dec.getStnId()
+
         return profs, stn_id
 
     def hasConnection(self):
@@ -969,6 +871,9 @@ def loadData(data_source, loc, run, indexes, ntry=0, __text__=None, __prog__=Non
         url = data_source.getURLList(outlet="Local")[0].replace("file://", "")
         decoder = ARWDecoder
         dec = decoder((url, loc[0], loc[1]))
+    elif data_source.isPointForecast():
+        fhours = [data_source.getForecastHours()[idx] for idx in indexes]
+        return build_profile_collection(data_source.getName(), loc, run, fhours)
     else:
         decoder, url = data_source.getDecoderAndURL(loc, run, outlet_num=ntry)
         logging.info("Using decoder: " + str(decoder))
@@ -1021,7 +926,13 @@ class Main(QMainWindow):
         self.setWindowTitle(window_title)
 
         self.show()
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            frame = self.frameGeometry()
+            frame.moveCenter(screen.availableGeometry().center())
+            self.move(frame.topLeft())
         self.raise_()
+        self.activateWindow()
         #import time
         #time.sleep(3)
         #self.grab().save('./screenshot.png', 'png')
@@ -1171,7 +1082,7 @@ class Main(QMainWindow):
         txt += "\n\nContribute: https://github.com/sharppy/SHARPpy/"
         msgBox.setText(txt)
         msgBox.exec_()
-
+        
         if msgBox.clickedButton() == documentationButton:
             QDesktopServices.openUrl(QUrl('http://sharppy.github.io/SHARPpy/'))
         elif msgBox.clickedButton() == githubButton:
@@ -1201,10 +1112,6 @@ class Main(QMainWindow):
         """
         Handles close events (gets called when the window closes).
         """
-        # JTS - Cleanup; Remove nucapsTimes.txt when main GUI closes.
-        if os.path.isfile(NUCAPS_times_file):
-            os.remove(NUCAPS_times_file)
-
         self.config.toFile()
 
 def newerRelease(latest):
@@ -1262,7 +1169,7 @@ def search_and_plotDB(model, station, datetime, close=True, output='./'):
         return main_win
 
     string = OKGREEN + "Creating image for station %s using data source %s at time %s ..." + ENDC
-    print( string % (station, model, datetime.strftime('%Y%m%d/%H%M')))
+    print( string % (station, model, datetime.strftime('%Y%m%d/%H%M')))  
     main_win.picker.skew.spc_widget.pixmapToFile(output + datetime.strftime('%Y%m%d.%H%M_' + model + '.png'))
     if close:
         main_win.picker.skew.close()
@@ -1278,14 +1185,14 @@ def test(fn):
     win.close()
 
 def parseArgs():
-    desc = """This binary launches the SHARPpy Picker and GUI from the command line.  When
-           run from the command line without arguments, this binary simply launches the Picker
-           and loads in the various datasets within the user's ~/.sharppy directory.  When the
+    desc = """This binary launches the SHARPpy Picker and GUI from the command line.  When 
+           run from the command line without arguments, this binary simply launches the Picker 
+           and loads in the various datasets within the user's ~/.sharppy directory.  When the 
            --debug flag is set, the GUI is run in debug mode.
 
-           When a set of files are passed as a command line argument, the program will
+           When a set of files are passed as a command line argument, the program will 
            generate images of the SHARPpy GUI for each sounding.  Soundings can be overlaid
-           on top of one another if the collect flag is set.  In addition, data from the
+           on top of one another if the collect flag is set.  In addition, data from the 
            datasources can be plotted using the datasource, station, and datetime arguments."""
     data_sources = [key for key in data_source.loadDataSources().keys()]
     ep = "Available Datasources: " + ', '.join(data_sources)
@@ -1303,21 +1210,21 @@ def parseArgs():
     #                help="do not close the GUI after viewing the image")
     group = ap.add_argument_group("datasource access arguments")
 
-    group.add_argument('--datasource', dest='ds', type=str,
+    group.add_argument('--datasource', dest='ds', type=str, 
                     help="the name of the datasource to search")
     group.add_argument('--station', dest='stn', type=str,
                     help="the name of the station to plot (ICAO, IATA)")
-    group.add_argument('--datetime', dest='dt', type=str,
+    group.add_argument('--datetime', dest='dt', type=str, 
                     help="the date/time of the data to plot (YYYYMMDD/HH)")
     ap.add_argument('--output', dest='output', type=str,
                     help="the output directory to store the images", default='./')
-    args = ap.parse_args()
+    args = ap.parse_args() 
 
     # Print out versioning information and quit
     if args.version is True:
         ap.exit(0, versioning_info(True) + '\n')
-
-    # Catch invalid data source
+    
+    # Catch invalid data source 
     if args.ds is not None and args.ds not in data_sources:
         txt = FAIL + "Invalid data source passed to the program.  Exiting." + ENDC
         ap.error(txt)
@@ -1334,7 +1241,7 @@ def parseArgs():
 
 def main():
     args = parseArgs()
-
+ 
     # Create an application
     #app = QApplication([])
     #app.setAttribute(Qt.AA_EnableHighDpiScaling)
@@ -1346,21 +1253,21 @@ def main():
     else:
         app = QApplication.instance()
 
-    #win = createWindow(args.file_names, collect=args.collect, close=False)
-    # Check to see if there's a newer version of SHARPpy on Github Releases
-#     latest = check_latest()
+    # Skip the network-driven release popup unless explicitly requested.
+    if os.environ.get("SHARPPY_CHECK_UPDATES") == "1":
+        latest = check_latest()
 
-#     if latest[0] is False:
-#         logging.info("A newer release of SHARPpy was found on Github Releases.")
-#     else:
-#         logging.info("This is the most recent version of SHARPpy.")
+        if latest[0] is False:
+            logging.info("A newer release of SHARPpy was found on Github Releases.")
+        else:
+            logging.info("This is the most recent version of SHARPpy.")
 
-    # Alert the user that there's a newer version on Github (and by extension through CI also on pip and conda)
-    # if latest[0] is False:
-    #     newerRelease(latest)
+        # Alert the user that there's a newer version on Github.
+        if latest[0] is False:
+            newerRelease(latest)
 
     if args.dt is not None and args.ds is not None and args.stn is not None:
-        dt = date.datetime.strptime(args.dt, "%Y%m%d/%H")
+        dt = date.datetime.strptime(args.dt, "%Y%m%d/%H")   
         win = search_and_plotDB(args.ds, args.stn, dt, args.output)
         win.close()
     elif args.file_names != []:
@@ -1374,4 +1281,5 @@ def main():
 if __name__ == '__main__':
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
+#
     main()

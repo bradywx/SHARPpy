@@ -1,7 +1,7 @@
 __author__ = 'keltonhalbert, wblumberg'
 
 import logging
-from sharppy.viz import plotSkewT, plotHodo, plotText, plotAnalogues
+from sharppy.viz import plotSkewT, plotHodo, plotText, plotAdvDiagnostics
 from sharppy.viz import plotThetae, plotWinds, plotSpeed, plotKinematics #, plotGeneric
 from sharppy.viz import plotSlinky, plotWatch, plotAdvection, plotSTP, plotWinter
 from sharppy.viz import plotSHIP, plotSTPEF, plotFire, plotVROT
@@ -10,7 +10,6 @@ from qtpy.QtGui import *
 from qtpy.QtWidgets import *
 import sharppy.sharptab.profile as profile
 import sharppy.sharptab as tab
-import sharppy.io as io
 from sutils.config import Config
 from datetime import datetime, timedelta
 import numpy as np
@@ -37,7 +36,7 @@ class SPCWidget(QWidget):
     """
 
     inset_generators = {
-        'SARS':plotAnalogues,
+        'ADVANCED':plotAdvDiagnostics,
         'STP STATS':plotSTP,
         'COND STP':plotSTPEF,
         'WINTER':plotWinter,
@@ -47,7 +46,7 @@ class SPCWidget(QWidget):
     }
 
     inset_names = {
-        'SARS':'Sounding Analogues',
+        'ADVANCED':'Advanced Diagnostics',
         'STP STATS':'Sig-Tor Stats',
         'COND STP':'EF-Scale Probs (Sig-Tor)',
         'WINTER':'Winter Weather',
@@ -57,7 +56,7 @@ class SPCWidget(QWidget):
     }
 
     inset_cfg = {
-        ('insets', 'left_inset'):'SARS',
+        ('insets', 'left_inset'):'ADVANCED',
         ('insets', 'right_inset'):'STP STATS',
     }
 
@@ -114,6 +113,12 @@ class SPCWidget(QWidget):
         self.available_insets = inset_ids
         self.left_inset = self.config['insets', 'left_inset']
         self.right_inset = self.config['insets', 'right_inset']
+        if self.left_inset == 'SARS':
+            self.left_inset = 'ADVANCED'
+            self.config['insets', 'left_inset'] = self.left_inset
+        if self.right_inset == 'SARS':
+            self.right_inset = 'ADVANCED'
+            self.config['insets', 'right_inset'] = self.right_inset
         self.insets = {}
 
         self.parcel_types = [self.config['parcel_types', 'pcl1'], self.config['parcel_types', 'pcl2'], \
@@ -289,8 +294,6 @@ class SPCWidget(QWidget):
         self.hodo.reset_vector.connect(self.resetVector)
         self.hodo.toggle_vector.connect(self.toggleVector)
 
-        self.insets["SARS"].updatematch.connect(self.updateSARS)
-
     def addProfileCollection(self, prof_col, prof_id, focus=True):
         logging.debug("Adding a Profile Collection to SPCWindow.")
 
@@ -306,6 +309,7 @@ class SPCWidget(QWidget):
             self.coll_observed = False
             self.sound.setAllObserved(self.coll_observed, update_gui=False)
             self.hodo.setAllObserved(self.coll_observed, update_gui=False)
+
 
         cur_dt = self.prof_collections[self.pc_idx].getCurrentDate()
         for prof_col in self.prof_collections:
@@ -347,22 +351,6 @@ class SPCWidget(QWidget):
         self.sound.rmProfileCollection(prof_col)
         self.hodo.rmProfileCollection(prof_col)
 
-        # If we've removed an analog, remove it from the profile it's an analog to.
-        if prof_col.hasMeta('filematch'):
-            filematch = prof_col.getMeta('filematch')
-            for pc in self.prof_collections:
-                if pc.hasMeta('analogfile'):
-                    keys, vals = list(zip(*list(pc.getMeta('analogfile').items())))
-                    if filematch in vals:
-                        keys = list(keys); vals = list(vals)
-
-                        idx = vals.index(filematch)
-                        vals.pop(idx)
-                        keys.pop(idx)
-
-                        pc.setMeta('analogfile', dict(list(zip(keys, vals))))
-            self.insets['SARS'].clearSelection()
-
         if self.pc_idx == pc_idx:
             self.pc_idx = 0
         elif self.pc_idx > pc_idx:
@@ -377,7 +365,7 @@ class SPCWidget(QWidget):
 
     def updateProfs(self):
         logging.debug("Calling SPCWidget.updateProfs")
-
+        
         prof_col = self.prof_collections[self.pc_idx]
         self.default_prof = prof_col.getHighlightedProf()
 
@@ -419,31 +407,6 @@ class SPCWidget(QWidget):
         self.config['parcel_types', 'pcl3'] = self.convective.pcl_types[2]
         self.config['parcel_types', 'pcl4'] = self.convective.pcl_types[3]
 
-    @Slot(str)
-    def updateSARS(self, filematch):
-        prof_col = self.prof_collections[self.pc_idx]
-
-        dec = io.spc_decoder.SPCDecoder(filematch)
-        match_col = dec.getProfiles()
-
-        match_col.setMeta('model', 'Analog')
-        match_col.setMeta('run', prof_col.getCurrentDate())
-        match_col.setMeta('base_time', prof_col.getCurrentDate())
-        match_col.setMeta('observed', True)
-        match_col.setMeta('filematch', filematch)
-        match_col.setAnalogToDate(prof_col.getCurrentDate())
-
-        dt = prof_col.getCurrentDate()
-        if prof_col.hasMeta('analogfile'):
-            analogfiles = prof_col.getMeta('analogfile')
-            analogfiles[dt] = filematch
-        else:
-            analogfiles = {dt:filematch}
-
-        prof_col.setMeta('analogfile', analogfiles)
-
-        self.parentWidget().addProfileCollection(match_col, focus=False)
-
     @Slot(Config)
     def updateConfig(self, config, update_gui=True):
         logging.debug("Updating the SHARPpy GUI configuration.")
@@ -475,7 +438,7 @@ class SPCWidget(QWidget):
         sheet = self.styleSheet()
         sheet = _modifySheet(sheet, 'background-color', bg_hex)
         self.setStyleSheet(sheet)
-
+        
         sheet = self.ur.styleSheet()
         sheet = _modifySheet(sheet, 'background-color', bg_hex)
         sheet = _modifySheet(sheet, 'border-color', fg_hex)
@@ -521,7 +484,7 @@ class SPCWidget(QWidget):
         self.convective.setDeviant(deviant)
         self.kinematic.setDeviant(deviant)
 
-        self.insets['SARS'].setDeviant(deviant)
+        self.insets['ADVANCED'].setDeviant(deviant)
         self.insets['STP STATS'].setDeviant(deviant)
         self.insets['COND STP'].setDeviant(deviant)
         self.setFocus()
@@ -578,7 +541,7 @@ class SPCWidget(QWidget):
         if self.left_inset == "WINTER" or self.right_inset == "WINTER":
             self.sound.setDGZ(True)
             self.dgz = True
-
+ 
         ## Do a check for setting the pbl
         if self.left_inset == "FIRE" or self.right_inset == "FIRE":
             self.sound.setPBLLevel(True)
@@ -613,18 +576,6 @@ class SPCWidget(QWidget):
         self.parcel_types = self.convective.pcl_types
         self.updateProfs()
 
-        prof_col = self.prof_collections[self.pc_idx]
-        if prof_col.hasMeta('analogfile'):
-            match = prof_col.getMeta('analogfile')
-            dt = prof_col.getCurrentDate()
-            if dt in match:
-                self.insets['SARS'].setSelection(match[dt])
-            else:
-                self.insets['SARS'].clearSelection()
-        else:
-            self.insets['SARS'].setParent(self.text)
-            self.insets['SARS'].clearSelection()
-
     def advanceHighlight(self, direction):
         self.prof_collections[self.pc_idx].advanceHighlight(direction)
         self.updateProfs()
@@ -640,16 +591,6 @@ class SPCWidget(QWidget):
         self.pc_idx = idxs[loc_idx]
 
         self.updateProfs()
-
-        if self.prof_collections[self.pc_idx].hasMeta('analogfile'):
-            match = self.prof_collections[self.pc_idx].getMeta('analogfile')
-            dt = prof_col.getCurrentDate()
-            if dt in match:
-                self.insets['SARS'].setSelection(match[dt])
-            else:
-                self.insets['SARS'].clearSelection()
-        else:
-            self.insets['SARS'].clearSelection()
 
     def closeEvent(self, e):
         logging.debug("SPCWindow closeEvent:" + str(e))
@@ -697,12 +638,12 @@ class SPCWidget(QWidget):
             if self.left_inset == "WINTER" and self.dgz:
                 self.sound.setDGZ(False)
                 self.dgz = False
-
+ 
             if self.left_inset == "FIRE" and self.pbl:
                 self.sound.setPBLLevel(False)
                 self.pbl = False
-
-            # Delete and re-make the inset.  For some stupid reason, pyside/QT forces you to
+            
+            # Delete and re-make the inset.  For some stupid reason, pyside/QT forces you to 
             #   delete something you want to remove from the layout.
             self.left_inset_ob.deleteLater()
             self.insets[self.left_inset] = SPCWidget.inset_generators[self.left_inset]()
@@ -724,7 +665,7 @@ class SPCWidget(QWidget):
                 self.sound.setPBLLevel(False)
                 self.pbl = False
 
-            # Delete and re-make the inset.  For some stupid reason, pyside/QT forces you to
+            # Delete and re-make the inset.  For some stupid reason, pyside/QT forces you to 
             #   delete something you want to remove from the layout.
             self.right_inset_ob.deleteLater()
             self.insets[self.right_inset] = SPCWidget.inset_generators[self.right_inset]()
@@ -743,7 +684,7 @@ class SPCWidget(QWidget):
         if a.data() == "FIRE":
             self.sound.setPBLLevel(True)
             self.pbl = True
-
+ 
         self.setFocus()
         self.update()
 
@@ -773,7 +714,7 @@ class SPCWindow(QMainWindow):
 
         bg_hex = self.spc_widget.config['preferences', 'bg_color']
         self.setStyleSheet("QMainWindow { background-color: " + bg_hex + "; }")
-
+        
         ## handle the attribute of the main window
         if platform.system() == 'Windows':
             self.setGeometry(10,30,1180,800)
@@ -865,11 +806,10 @@ class SPCWindow(QMainWindow):
         if any( mitem.title() == menu_name and mitem.menuAction().isVisible() for mitem in self.menu_items ):
             self.spc_widget.setProfileCollection(menu_name)
             return
-
-        # JTS - keep "collect observed" option active, regardless of profile type.
-        # if not prof_col.getMeta('observed'):
-            # self.allobserved.setDisabled(True)
-            # self.allobserved.setChecked(False)
+            
+        if not prof_col.getMeta('observed'):
+            self.allobserved.setDisabled(True)
+            self.allobserved.setChecked(False)
 
         self.createProfileMenu(prof_col)
 
@@ -965,21 +905,6 @@ class SPCWindow(QMainWindow):
         pc_date = prof_col.getMeta('run').strftime("%d/%H%MZ")
         pc_model = prof_col.getMeta('model')
 
-        # JTS - For NUCAPS case study data sources,
-        # construct pc_date string from pc_loc since obs times list is empty.
-        if pc_model == "NUCAPS Case Study NOAA-20" \
-            or pc_model == "NUCAPS Case Study Suomi-NPP" \
-            or pc_model == "NUCAPS Case Study Aqua" \
-            or pc_model == "NUCAPS Case Study MetOp-A" \
-            or pc_model == "NUCAPS Case Study MetOp-B" \
-            or pc_model == "NUCAPS Case Study MetOp-C":
-            date = pc_loc.split('_')[0]
-            time = pc_loc.split('_')[1]
-            day = date[4:6]
-            hour = time[0:2]
-            minute = time[2:4]
-            pc_date = f'{day}/{hour}{minute}Z'
-
         return "%s (%s %s)" % (pc_loc, pc_date, pc_model)
 
     def interpProf(self):
@@ -1010,7 +935,7 @@ class SPCWindow(QMainWindow):
             self.picker_window.raise_()
 
 if __name__ == '__main__':
-    app_frame = QApplication([])
+    app_frame = QApplication([])    
     tester = SPCWindow()
-    tester.show()
+    tester.show()    
     app_frame.exec_()
