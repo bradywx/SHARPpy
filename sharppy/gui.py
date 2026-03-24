@@ -1,7 +1,7 @@
 import sys
 import numpy as np
 from qtpy import QtGui, QtCore, QtWidgets
-from sharppy.viz import plotSkewT, plotHodo, plotText, plotAnalogues
+from sharppy.viz import plotSkewT, plotHodo, plotText, plotAdvDiagnostics
 from sharppy.viz import plotThetae, plotWinds, plotSpeed, plotKinematics
 from sharppy.viz import plotSlinky, plotWatch, plotAdvection, plotSTP
 from sharppy.viz import plotGeneric
@@ -97,11 +97,12 @@ convective = plotText(prof)
 #convective = QtWidgets.QFrame()
 #kinematic = QtWidgets.QFrame()
 kinematic = plotKinematics(prof)
-SARS = plotAnalogues(prof)
+advanced = plotAdvDiagnostics()
+advanced.setProf(prof)
 stp = plotSTP(prof)
 grid3.addWidget(convective, 0, 0)
 grid3.addWidget(kinematic, 0, 1)
-grid3.addWidget(SARS, 0, 2)
+grid3.addWidget(advanced, 0, 2)
 grid3.addWidget(stp, 0, 3)
 grid.addWidget(text, 3, 0, 1, 2)
 pixmap = QtGui.QPixmap.grabWidget(mainWindow)

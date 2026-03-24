@@ -73,6 +73,9 @@ class ProfCollection(object):
         pipe = Queue(max_procs)
 
         for idx, prof in enumerate(self._profs[member]):
+            if self._cancel_copy:
+                break
+
             proc = Process(target=doCopy, args=(self._target_type, prof, idx, pipe))
             proc.start()
 
@@ -80,13 +83,25 @@ class ProfCollection(object):
             
             if (idx % max_procs) == 0 or idx == len(self._profs[member]) - 1:
                 for proc in self._procs:
+                    if self._cancel_copy:
+                        break
 
                     if platform.system() != "Windows":
                         # Windows hangs here for some reason, but runs fine without it.
                         proc.join()
-                        
+
+                    if self._cancel_copy:
+                        break
+
                     prof, copy_idx  = pipe.get()
                     self._profs[member][copy_idx] = prof
+
+                if self._cancel_copy:
+                    for proc in self._procs:
+                        if proc.is_alive():
+                            proc.terminate()
+                    self._procs = []
+                    break
                     
                 self._procs = []
         return
@@ -99,16 +114,16 @@ class ProfCollection(object):
         async:  An AsyncThreads instance.
         """
         self._async = async_obj
+        self._cancel_copy = False
         self._async.post(self._backgroundCopy, None, self._highlight)
 
     def cancelCopy(self):
         """
         Terminates any threads that are running in the background.
         """
+        self._cancel_copy = True
         for proc in self._procs:
             proc.terminate()
-        if self._async is not None:
-            self._async.clearQueue()
 
     def getMeta(self, key, index=False):
         """
